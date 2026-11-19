@@ -1,0 +1,1088 @@
+
+
+import os
+import sys
+import ast
+import json
+import re
+import time
+import urllib.request
+import urllib.error
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+ROOT = Path(__file__).resolve().parent
+BACKEND = ROOT / "backend"
+FRONTEND = ROOT / "frontend"
+
+API = "http://127.0.0.1:8000"
+WEB = "http://127.0.0.1:5500"
+
+PASS = []
+WARN = []
+FAIL = []
+INFO = []
+
+def add_result(category, status, message):
+    entry = f"[{status}] {category}: {message}"
+
+    if status == "PASS":
+        PASS.append(entry)
+    elif status == "WARN":
+        WARN.append(entry)
+    elif status == "FAIL":
+        FAIL.append(entry)
+    else:
+        INFO.append(entry)
+
+    print(entry)
+
+def heading(text):
+    print("\n" + "=" * 80)
+    print(text)
+    print("=" * 80)
+
+def check_file(path, label=None):
+    label = label or str(path)
+
+    if path.exists() and path.is_file():
+        add_result("FILE", "PASS", f"{label} exists")
+        return True
+
+    add_result("FILE", "FAIL", f"{label} missing")
+    return False
+
+def check_directory(path, label=None):
+    label = label or str(path)
+
+    if path.exists() and path.is_dir():
+        add_result("DIRECTORY", "PASS", f"{label} exists")
+        return True
+
+    add_result("DIRECTORY", "FAIL", f"{label} missing")
+    return False
+
+def read_text(path):
+    try:
+        return path.read_text(errors="ignore")
+    except Exception:
+        return ""
+
+def http_request(url, method="GET", data=None, headers=None, timeout=6):
+    headers = headers or {}
+
+    if data is not None:
+        data = json.dumps(data).encode()
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method=method
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            body = response.read().decode(errors="ignore")
+            return response.status, body, dict(response.headers)
+
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="ignore")
+        return e.code, body, dict(e.headers)
+
+    except Exception as e:
+        return None, str(e), {}
+
+def run_command(command, cwd=None, timeout=15):
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        return result.returncode, result.stdout, result.stderr
+
+    except Exception as e:
+        return -1, "", str(e)
+
+def safe_relative(path):
+    try:
+        return str(path.relative_to(ROOT))
+    except Exception:
+        return str(path)
+
+# =========================================================
+# START
+# =========================================================
+
+print("\n")
+print("=" * 80)
+print("GYM MANAGEMENT SAAS - FULL SYSTEM AUDIT")
+print("=" * 80)
+print("Project:", ROOT)
+print("Time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+print("Mode: READ-ONLY / NON-DESTRUCTIVE")
+print()
+
+# =========================================================
+# 1. PROJECT STRUCTURE
+# =========================================================
+
+heading("1. PROJECT STRUCTURE")
+
+check_directory(ROOT, "Project root")
+check_directory(BACKEND, "Backend")
+check_directory(FRONTEND, "Frontend")
+
+for folder in [
+    BACKEND / "app",
+    BACKEND / "app" / "api",
+    BACKEND / "app" / "models",
+    BACKEND / "app" / "schemas",
+    BACKEND / "alembic",
+    FRONTEND / "admin",
+    FRONTEND / "js",
+    FRONTEND / "public",
+]:
+    if folder.exists():
+        add_result("STRUCTURE", "PASS", f"{safe_relative(folder)}")
+    else:
+        add_result("STRUCTURE", "WARN", f"{safe_relative(folder)} missing")
+
+# =========================================================
+# 2. IMPORTANT FILES
+# =========================================================
+
+heading("2. IMPORTANT FILES")
+
+important_files = [
+    BACKEND / "app" / "main.py",
+    BACKEND / "app" / "database.py",
+    BACKEND / "alembic.ini",
+    BACKEND / "requirements.txt",
+    FRONTEND / "js" / "api.js",
+    FRONTEND / "public" / "login.html",
+    FRONTEND / "admin" / "dashboard.html",
+    FRONTEND / "admin" / "members.html",
+    FRONTEND / "admin" / "payments.html",
+]
+
+for file in important_files:
+    check_file(file)
+
+# =========================================================
+# 3. PYTHON SYNTAX
+# =========================================================
+
+heading("3. PYTHON SYNTAX CHECK")
+
+python_files = list(BACKEND.rglob("*.py"))
+
+if not python_files:
+    add_result("PYTHON", "WARN", "No Python files found")
+
+for file in python_files:
+    try:
+        source = file.read_text(errors="ignore")
+        ast.parse(source)
+
+        add_result(
+            "PYTHON SYNTAX",
+            "PASS",
+            safe_relative(file)
+        )
+
+    except SyntaxError as e:
+        add_result(
+            "PYTHON SYNTAX",
+            "FAIL",
+            f"{safe_relative(file)} line {e.lineno}: {e.msg}"
+        )
+
+    except Exception as e:
+        add_result(
+            "PYTHON SYNTAX",
+            "FAIL",
+            f"{safe_relative(file)}: {e}"
+        )
+
+# =========================================================
+# 4. JAVASCRIPT SYNTAX
+# =========================================================
+
+heading("4. JAVASCRIPT SYNTAX CHECK")
+
+js_files = list(FRONTEND.rglob("*.js"))
+
+node_available = run_command(["node", "--version"])
+
+if node_available[0] == 0:
+    print("Node version:", node_available[1].strip())
+
+    for file in js_files:
+        code, stdout, stderr = run_command(
+            ["node", "--check", str(file)],
+            cwd=ROOT
+        )
+
+        if code == 0:
+            add_result(
+                "JS SYNTAX",
+                "PASS",
+                safe_relative(file)
+            )
+        else:
+            add_result(
+                "JS SYNTAX",
+                "FAIL",
+                f"{safe_relative(file)}: {stderr.strip() or stdout.strip()}"
+            )
+else:
+    add_result("JS SYNTAX", "WARN", "Node.js not available")
+
+# =========================================================
+# 5. HTML BASIC VALIDATION
+# =========================================================
+
+heading("5. HTML BASIC VALIDATION")
+
+html_files = list(FRONTEND.rglob("*.html"))
+
+for file in html_files:
+    content = read_text(file)
+
+    if not content.strip():
+        add_result("HTML", "FAIL", f"{safe_relative(file)} is empty")
+        continue
+
+    if "<html" not in content.lower():
+        add_result("HTML", "WARN", f"{safe_relative(file)} has no <html> tag")
+
+    if "<body" not in content.lower():
+        add_result("HTML", "WARN", f"{safe_relative(file)} has no <body> tag")
+
+    if content.count("<script") != content.count("</script>"):
+        add_result("HTML", "WARN", f"{safe_relative(file)} script tag count mismatch")
+
+    if content.count("<style") != content.count("</style>"):
+        add_result("HTML", "WARN", f"{safe_relative(file)} style tag count mismatch")
+
+    if content.count("<div") != content.count("</div>"):
+        add_result(
+            "HTML STRUCTURE",
+            "WARN",
+            f"{safe_relative(file)} div count mismatch "
+            f"({content.count('<div')} opening / {content.count('</div>')} closing)"
+        )
+    else:
+        add_result("HTML STRUCTURE", "PASS", safe_relative(file))
+
+# =========================================================
+# 6. FRONTEND LINKS AND ASSETS
+# =========================================================
+
+heading("6. FRONTEND ASSET CHECK")
+
+for file in html_files:
+    content = read_text(file)
+
+    references = re.findall(
+        r'(?:src|href)\s*=\s*["\']([^"\']+)["\']',
+        content,
+        flags=re.I
+    )
+
+    for ref in references:
+        if ref.startswith(("http://", "https://", "//", "#", "data:", "mailto:")):
+            continue
+
+        ref = ref.split("?")[0]
+
+        if not ref:
+            continue
+
+        local_path = (file.parent / ref).resolve()
+
+        try:
+            local_path.relative_to(FRONTEND.resolve())
+        except ValueError:
+            add_result(
+                "ASSET SECURITY",
+                "WARN",
+                f"{safe_relative(file)} references outside frontend: {ref}"
+            )
+            continue
+
+        if local_path.exists():
+            add_result(
+                "ASSET",
+                "PASS",
+                f"{safe_relative(file)} -> {ref}"
+            )
+        else:
+            add_result(
+                "ASSET",
+                "FAIL",
+                f"{safe_relative(file)} missing asset: {ref}"
+            )
+
+# =========================================================
+# 7. API.JS REVIEW
+# =========================================================
+
+heading("7. FRONTEND API CONFIGURATION")
+
+api_js = FRONTEND / "js" / "api.js"
+
+if api_js.exists():
+    api_content = read_text(api_js)
+
+    if "API_BASE_URL" in api_content:
+        add_result("API CONFIG", "PASS", "API_BASE_URL found")
+    else:
+        add_result("API CONFIG", "FAIL", "API_BASE_URL missing")
+
+    if "access_token" in api_content:
+        add_result("AUTH", "PASS", "Access token handling found")
+    else:
+        add_result("AUTH", "WARN", "Access token handling not detected")
+
+    if "Authorization" in api_content:
+        add_result("AUTH", "PASS", "Authorization header found")
+    else:
+        add_result("AUTH", "WARN", "Authorization header not detected")
+
+    if "apiRequest" in api_content:
+        add_result("API", "PASS", "apiRequest wrapper found")
+    else:
+        add_result("API", "WARN", "apiRequest wrapper missing")
+
+    if "http://127.0.0.1:8000" in api_content:
+        add_result(
+            "CONFIGURATION",
+            "WARN",
+            "API URL uses localhost; production deployment needs configuration"
+        )
+
+# =========================================================
+# 8. BACKEND SERVER TEST
+# =========================================================
+
+heading("8. BACKEND SERVER")
+
+status, body, headers = http_request(API + "/openapi.json")
+
+if status == 200:
+    add_result("BACKEND", "PASS", "OpenAPI reachable")
+
+    try:
+        openapi = json.loads(body)
+        paths = openapi.get("paths", {})
+
+        add_result(
+            "OPENAPI",
+            "PASS",
+            f"{len(paths)} API paths discovered"
+        )
+
+    except Exception as e:
+        openapi = {}
+        paths = {}
+        add_result("OPENAPI", "FAIL", f"Invalid OpenAPI JSON: {e}")
+
+else:
+    openapi = {}
+    paths = {}
+
+    add_result(
+        "BACKEND",
+        "FAIL",
+        f"OpenAPI unreachable: HTTP {status} / {body[:200]}"
+    )
+
+# =========================================================
+# 9. API ROUTE INVENTORY
+# =========================================================
+
+heading("9. API ROUTE INVENTORY")
+
+if paths:
+    for path, methods in sorted(paths.items()):
+        method_names = ", ".join(
+            sorted(m.upper() for m in methods.keys())
+        )
+
+        print(f"{method_names:20} {path}")
+
+# =========================================================
+# 10. REQUIRED API ROUTES
+# =========================================================
+
+heading("10. REQUIRED API ROUTES")
+
+expected_routes = {
+    "/auth/login": ["post"],
+    "/members": ["get", "post"],
+    "/plans": ["get"],
+    "/subscriptions": ["get", "post"],
+    "/payments": ["get"],
+    "/dashboard/summary": ["get"],
+    "/attendance": ["post"],
+    "/attendance/summary/today": ["get"],
+    "/trainers": ["get"],
+}
+
+for route, required_methods in expected_routes.items():
+    actual = paths.get(route, {})
+
+    missing = [
+        method
+        for method in required_methods
+        if method not in actual
+    ]
+
+    if not missing:
+        add_result(
+            "API ROUTE",
+            "PASS",
+            f"{route} [{', '.join(required_methods)}]"
+        )
+    else:
+        add_result(
+            "API ROUTE",
+            "FAIL",
+            f"{route} missing methods: {missing}"
+        )
+
+# =========================================================
+# 11. AUTHENTICATION TESTS
+# =========================================================
+
+heading("11. AUTHENTICATION TESTS")
+
+login_route = "/auth/login"
+
+if login_route in paths:
+    code, response, _ = http_request(
+        API + login_route,
+        method="POST",
+        data={
+            "username": "audit_invalid_user",
+            "password": "audit_invalid_password"
+        }
+    )
+
+    if code in [400, 401, 403, 422]:
+        add_result(
+            "AUTH",
+            "PASS",
+            f"Invalid credentials rejected safely (HTTP {code})"
+        )
+    elif code == 200:
+        add_result(
+            "AUTH",
+            "WARN",
+            "Invalid credentials returned HTTP 200; inspect login logic"
+        )
+    elif code is None:
+        add_result(
+            "AUTH",
+            "FAIL",
+            f"Login endpoint connection failed: {response}"
+        )
+    else:
+        add_result(
+            "AUTH",
+            "WARN",
+            f"Invalid login returned unexpected HTTP {code}"
+        )
+else:
+    add_result("AUTH", "FAIL", "Login endpoint not found")
+
+# =========================================================
+# 12. PUBLIC / PROTECTED API TESTS
+# =========================================================
+
+heading("12. API AUTHORIZATION TESTS")
+
+protected_routes = [
+    "/members",
+    "/payments",
+    "/dashboard/summary",
+    "/subscriptions",
+    "/plans",
+    "/trainers",
+]
+
+for route in protected_routes:
+    if route not in paths:
+        add_result("AUTHORIZATION", "WARN", f"{route} not in OpenAPI")
+        continue
+
+    code, response, _ = http_request(API + route)
+
+    if code in [401, 403]:
+        add_result(
+            "AUTHORIZATION",
+            "PASS",
+            f"{route} blocked without token (HTTP {code})"
+        )
+    elif code == 200:
+        add_result(
+            "AUTHORIZATION",
+            "WARN",
+            f"{route} accessible without token (HTTP 200)"
+        )
+    elif code is None:
+        add_result(
+            "AUTHORIZATION",
+            "FAIL",
+            f"{route} connection failed: {response}"
+        )
+    else:
+        add_result(
+            "AUTHORIZATION",
+            "WARN",
+            f"{route} returned HTTP {code}"
+        )
+
+# =========================================================
+# 13. WEB FRONTEND SERVER
+# =========================================================
+
+heading("13. FRONTEND SERVER")
+
+status, body, _ = http_request(WEB)
+
+if status == 200:
+    add_result("FRONTEND SERVER", "PASS", "Frontend root reachable")
+else:
+    add_result(
+        "FRONTEND SERVER",
+        "FAIL",
+        f"Frontend unreachable: HTTP {status}"
+    )
+
+# =========================================================
+# 14. FRONTEND PAGES
+# =========================================================
+
+heading("14. FRONTEND PAGE CHECK")
+
+pages = [
+    "/public/login.html",
+    "/admin/dashboard.html",
+    "/admin/members.html",
+    "/admin/payments.html",
+    "/admin/plans.html",
+    "/admin/trainers.html",
+    "/admin/settings.html",
+    "/admin/attendance.html",
+]
+
+for page in pages:
+    code, body, _ = http_request(WEB + page)
+
+    if code == 200:
+        add_result("WEB PAGE", "PASS", f"{page}")
+    elif code == 404:
+        add_result("WEB PAGE", "FAIL", f"{page} not found (404)")
+    elif code is None:
+        add_result("WEB PAGE", "FAIL", f"{page} server error")
+    else:
+        add_result("WEB PAGE", "WARN", f"{page} HTTP {code}")
+
+# =========================================================
+# 15. DATABASE CONNECTION
+# =========================================================
+
+heading("15. DATABASE CONNECTION")
+
+db_test = r'''
+import sys
+sys.path.insert(0, ".")
+try:
+    from app.db.session import engine
+    from sqlalchemy import text
+
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+
+    print("DATABASE_OK")
+except Exception as e:
+    print("DATABASE_ERROR:", type(e).__name__, str(e))
+    sys.exit(1)
+'''
+
+backend_python = BACKEND / ".venv" / "bin" / "python"
+
+if backend_python.exists():
+    code, stdout, stderr = run_command(
+        [str(backend_python), "-c", db_test],
+        cwd=BACKEND
+    )
+
+    output = (stdout + stderr).strip()
+
+    if code == 0 and "DATABASE_OK" in output:
+        add_result("DATABASE", "PASS", "Database connection successful")
+    else:
+        add_result("DATABASE", "FAIL", output[-600:])
+
+else:
+    add_result(
+        "DATABASE",
+        "WARN",
+        "Backend virtual environment Python not found"
+    )
+
+# =========================================================
+# 16. ALEMBIC MIGRATION
+# =========================================================
+
+heading("16. ALEMBIC MIGRATION STATUS")
+
+if backend_python.exists():
+    code, stdout, stderr = run_command(
+        [
+            str(backend_python),
+            "-m",
+            "alembic",
+            "current"
+        ],
+        cwd=BACKEND
+    )
+
+    output = (stdout + stderr).strip()
+
+    if code == 0:
+        add_result(
+            "ALEMBIC",
+            "PASS",
+            f"Current migration: {output[-300:]}"
+        )
+    else:
+        add_result(
+            "ALEMBIC",
+            "FAIL",
+            output[-500:]
+        )
+
+    code, stdout, stderr = run_command(
+        [
+            str(backend_python),
+            "-m",
+            "alembic",
+            "heads"
+        ],
+        cwd=BACKEND
+    )
+
+    head_output = (stdout + stderr).strip()
+
+    if code == 0:
+        add_result(
+            "ALEMBIC",
+            "INFO",
+            f"Migration head: {head_output[-300:]}"
+        )
+    else:
+        add_result(
+            "ALEMBIC",
+            "WARN",
+            f"Unable to read heads: {head_output[-300:]}"
+        )
+
+# =========================================================
+# 17. MODEL AND ROUTER DISCOVERY
+# =========================================================
+
+heading("17. MODEL AND ROUTER DISCOVERY")
+
+model_files = list((BACKEND / "app").rglob("*.py"))
+
+model_markers = [
+    "class Member",
+    "class Plan",
+    "class Trainer",
+    "class Subscription",
+    "class Payment",
+    "class Attendance",
+    "class Workout",
+    "class GymSettings",
+]
+
+all_backend_text = "\n".join(
+    read_text(f) for f in model_files
+)
+
+for marker in model_markers:
+    if marker in all_backend_text:
+        add_result("MODEL", "PASS", marker)
+    else:
+        add_result("MODEL", "WARN", marker + " not found")
+
+# =========================================================
+# 18. FRONTEND DEMO / PLACEHOLDER SCAN
+# =========================================================
+
+heading("18. DEMO DATA AND PLACEHOLDER SCAN")
+
+suspicious_patterns = [
+    "demo",
+    "demo mode",
+    "demo only",
+    "illustrative",
+    "sample data",
+    "dummy data",
+    "mock data",
+    "fictional",
+    "not connected",
+    "coming soon",
+    "TODO",
+    "FIXME",
+    "placeholder",
+    "hardcoded",
+]
+
+scan_extensions = {".html", ".js", ".css"}
+
+for file in FRONTEND.rglob("*"):
+    if not file.is_file() or file.suffix not in scan_extensions:
+        continue
+
+    content = read_text(file)
+    lower = content.lower()
+
+    matches = []
+
+    for pattern in suspicious_patterns:
+        count = lower.count(pattern.lower())
+
+        if count:
+            matches.append(f"{pattern}({count})")
+
+    if matches:
+        add_result(
+            "DEMO/PLACEHOLDER",
+            "WARN",
+            f"{safe_relative(file)} -> " + ", ".join(matches)
+        )
+
+# =========================================================
+# 19. HARDCODED LOCALHOST / DEVELOPMENT SETTINGS
+# =========================================================
+
+heading("19. DEVELOPMENT CONFIGURATION")
+
+for file in list(FRONTEND.rglob("*.html")) + list(FRONTEND.rglob("*.js")):
+    content = read_text(file)
+
+    if "127.0.0.1:8000" in content or "localhost:8000" in content:
+        add_result(
+            "CONFIG",
+            "WARN",
+            f"{safe_relative(file)} contains local API URL"
+        )
+
+    if "localhost:5500" in content or "127.0.0.1:5500" in content:
+        add_result(
+            "CONFIG",
+            "INFO",
+            f"{safe_relative(file)} contains local frontend URL"
+        )
+
+# =========================================================
+# 20. SECRET SCAN
+# =========================================================
+
+heading("20. BASIC SECRET EXPOSURE SCAN")
+
+secret_patterns = [
+    r"api[_-]?key\s*[:=]\s*['\"][^'\"]{12,}",
+    r"secret\s*[:=]\s*['\"][^'\"]{12,}",
+    r"password\s*[:=]\s*['\"][^'\"]{5,}",
+    r"aws_access_key_id\s*[:=]",
+    r"-----BEGIN PRIVATE KEY-----",
+]
+
+secret_scan_files = []
+
+for folder in [BACKEND, FRONTEND]:
+    if not folder.exists():
+        continue
+
+    for file in folder.rglob("*"):
+        if not file.is_file():
+            continue
+
+        if file.suffix in {".py", ".js", ".html", ".css", ".json", ".env"}:
+            if ".venv" in str(file):
+                continue
+
+            secret_scan_files.append(file)
+
+secret_findings = 0
+
+for file in secret_scan_files:
+    content = read_text(file)
+
+    for pattern in secret_patterns:
+        if re.search(pattern, content, flags=re.I):
+            secret_findings += 1
+
+            add_result(
+                "SECRET SCAN",
+                "WARN",
+                f"Potential secret pattern in {safe_relative(file)} "
+                "(value not printed)"
+            )
+
+if secret_findings == 0:
+    add_result(
+        "SECRET SCAN",
+        "PASS",
+        "No basic secret patterns detected"
+    )
+
+# =========================================================
+# 21. GIT AND ENVIRONMENT FILE CHECK
+# =========================================================
+
+heading("21. GIT AND ENVIRONMENT FILE CHECK")
+
+git_dir = ROOT / ".git"
+gitignore = ROOT / ".gitignore"
+env_file = BACKEND / ".env"
+
+if git_dir.exists():
+    add_result("GIT", "PASS", "Git repository exists")
+else:
+    add_result("GIT", "WARN", "Git repository not detected")
+
+if gitignore.exists():
+    gitignore_content = read_text(gitignore)
+
+    if ".env" in gitignore_content:
+        add_result("GITIGNORE", "PASS", ".env ignore rule found")
+    else:
+        add_result("GITIGNORE", "WARN", ".env not explicitly ignored")
+
+    for important_rule in [
+        ".venv",
+        "__pycache__",
+    ]:
+        if important_rule in gitignore_content:
+            add_result(
+                "GITIGNORE",
+                "PASS",
+                f"{important_rule} ignore rule found"
+            )
+        else:
+            add_result(
+                "GITIGNORE",
+                "WARN",
+                f"{important_rule} ignore rule missing"
+            )
+else:
+    add_result("GITIGNORE", "WARN", ".gitignore missing")
+
+if env_file.exists():
+    add_result(
+        "ENVIRONMENT",
+        "WARN",
+        "Backend .env exists (values not printed)"
+    )
+else:
+    add_result(
+        "ENVIRONMENT",
+        "WARN",
+        "Backend .env file not found"
+    )
+
+# =========================================================
+# 22. REQUIREMENTS
+# =========================================================
+
+heading("22. DEPENDENCY CHECK")
+
+requirements = BACKEND / "requirements.txt"
+
+if requirements.exists():
+    req_content = read_text(requirements)
+
+    add_result(
+        "DEPENDENCIES",
+        "PASS",
+        f"requirements.txt contains {len(req_content.splitlines())} lines"
+    )
+
+    if backend_python.exists():
+        code, stdout, stderr = run_command(
+            [
+                str(backend_python),
+                "-m",
+                "pip",
+                "check"
+            ],
+            cwd=BACKEND
+        )
+
+        if code == 0:
+            add_result("DEPENDENCIES", "PASS", "pip dependency check passed")
+        else:
+            add_result(
+                "DEPENDENCIES",
+                "WARN",
+                (stdout + stderr).strip()[-500:]
+            )
+else:
+    add_result("DEPENDENCIES", "WARN", "requirements.txt missing")
+
+# =========================================================
+# 23. CORS CHECK
+# =========================================================
+
+heading("23. CORS CONFIGURATION")
+
+main_py = BACKEND / "app" / "main.py"
+
+if main_py.exists():
+    main_content = read_text(main_py)
+
+    if "CORSMiddleware" in main_content:
+        add_result("CORS", "PASS", "CORSMiddleware configured")
+
+        if "*" in main_content:
+            add_result(
+                "CORS",
+                "WARN",
+                "Wildcard CORS found; review before production"
+            )
+    else:
+        add_result("CORS", "WARN", "CORSMiddleware not detected")
+
+# =========================================================
+# 24. API RESPONSE TIMING
+# =========================================================
+
+heading("24. API RESPONSE TIMING")
+
+test_urls = [
+    API + "/openapi.json",
+    WEB + "/public/login.html",
+    WEB + "/admin/dashboard.html",
+    WEB + "/admin/members.html",
+    WEB + "/admin/payments.html",
+]
+
+for url in test_urls:
+    start = time.time()
+
+    code, body, _ = http_request(url)
+
+    elapsed = (time.time() - start) * 1000
+
+    if code == 200:
+        add_result(
+            "RESPONSE",
+            "PASS",
+            f"{url} -> {code} in {elapsed:.1f} ms"
+        )
+    elif code is None:
+        add_result(
+            "RESPONSE",
+            "FAIL",
+            f"{url} -> connection error"
+        )
+    else:
+        add_result(
+            "RESPONSE",
+            "WARN",
+            f"{url} -> HTTP {code}, {elapsed:.1f} ms"
+        )
+
+# =========================================================
+# 25. REPORT
+# =========================================================
+
+heading("25. FINAL REPORT")
+
+total = len(PASS) + len(WARN) + len(FAIL)
+
+print("\n")
+print("=" * 80)
+print("AUDIT SUMMARY")
+print("=" * 80)
+
+print(f"PASS : {len(PASS)}")
+print(f"WARN : {len(WARN)}")
+print(f"FAIL : {len(FAIL)}")
+print(f"TOTAL: {total}")
+
+if total:
+    score = round((len(PASS) / total) * 100, 2)
+else:
+    score = 0
+
+print(f"\nBasic pass ratio: {score}%")
+
+if FAIL:
+    print("\n" + "=" * 80)
+    print("FAILURES")
+    print("=" * 80)
+
+    for item in FAIL:
+        print(item)
+
+if WARN:
+    print("\n" + "=" * 80)
+    print("WARNINGS")
+    print("=" * 80)
+
+    for item in WARN:
+        print(item)
+
+if PASS:
+    print("\n" + "=" * 80)
+    print("PASSED CHECKS")
+    print("=" * 80)
+
+    for item in PASS:
+        print(item)
+
+# Generate report file
+
+report_path = ROOT / "GYM_FULL_AUDIT_REPORT.txt"
+
+with open(report_path, "w") as f:
+    f.write("GYM MANAGEMENT SAAS FULL AUDIT\n")
+    f.write("=" * 80 + "\n")
+    f.write(f"Date: {datetime.now()}\n")
+    f.write(f"PASS: {len(PASS)}\n")
+    f.write(f"WARN: {len(WARN)}\n")
+    f.write(f"FAIL: {len(FAIL)}\n")
+    f.write(f"TOTAL: {total}\n")
+    f.write(f"SCORE: {score}%\n\n")
+
+    for section, items in [
+        ("FAILURES", FAIL),
+        ("WARNINGS", WARN),
+        ("PASSED", PASS),
+        ("INFO", INFO),
+    ]:
+        f.write("\n" + section + "\n")
+        f.write("-" * 80 + "\n")
+
+        for item in items:
+            f.write(item + "\n")
+
+print("\nReport saved at:")
+print(report_path)
+
+print("\nAUDIT COMPLETED")
